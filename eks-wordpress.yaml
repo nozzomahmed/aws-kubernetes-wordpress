@@ -14,7 +14,7 @@ Parameters:
   KeyName:
     Description: The EC2 Key Pair to allow SSH access to the instances
     Type: AWS::EC2::KeyPair::KeyName
-    Default: peter-key-north-virginia
+    Default: test-key
 
   NodeImageId:
     Description: AMI id for the node instances.
