@@ -1,0 +1,772 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+Description: >
+  Template to deploy Wordpress on AWS EKS with Aurora PostgreSQL.
+
+##############################
+#
+# Parameters
+#
+##############################
+
+Parameters:
+
+  KeyName:
+    Description: The EC2 Key Pair to allow SSH access to the instances
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: peter-key-north-virginia
+
+  NodeImageId:
+    Description: AMI id for the node instances.
+    Type: AWS::EC2::Image::Id
+    Default: ami-0abcb9f9190e867ab
+
+  NodeInstanceType:
+    Description: EC2 instance type for the node instances
+    Type: String
+    Default: t2.medium
+    ConstraintDescription: Must be a valid EC2 instance type
+    AllowedValues:
+      - t2.medium
+      - t2.large
+      - t2.xlarge
+      - t2.2xlarge
+      - t3.nano
+      - t3.micro
+      - t3.small
+      - t3.medium
+      - t3.large
+      - t3.xlarge
+      - t3.2xlarge
+      - m3.medium
+      - m3.large
+      - m3.xlarge
+      - m3.2xlarge
+      - m4.large
+      - m4.xlarge
+      - m4.2xlarge
+      - m4.4xlarge
+      - m4.10xlarge
+      - m5.large
+      - m5.xlarge
+      - m5.2xlarge
+      - m5.4xlarge
+      - m5.12xlarge
+      - m5.24xlarge
+      - c4.large
+      - c4.xlarge
+      - c4.2xlarge
+      - c4.4xlarge
+      - c4.8xlarge
+      - c5.large
+      - c5.xlarge
+      - c5.2xlarge
+      - c5.4xlarge
+      - c5.9xlarge
+      - c5.18xlarge
+      - i3.large
+      - i3.xlarge
+      - i3.2xlarge
+      - i3.4xlarge
+      - i3.8xlarge
+      - i3.16xlarge
+      - r3.xlarge
+      - r3.2xlarge
+      - r3.4xlarge
+      - r3.8xlarge
+      - r4.large
+      - r4.xlarge
+      - r4.2xlarge
+      - r4.4xlarge
+      - r4.8xlarge
+      - r4.16xlarge
+      - x1.16xlarge
+      - x1.32xlarge
+      - p2.xlarge
+      - p2.8xlarge
+      - p2.16xlarge
+      - p3.2xlarge
+      - p3.8xlarge
+      - p3.16xlarge
+      - p3dn.24xlarge
+      - r5.large
+      - r5.xlarge
+      - r5.2xlarge
+      - r5.4xlarge
+      - r5.12xlarge
+      - r5.24xlarge
+      - r5d.large
+      - r5d.xlarge
+      - r5d.2xlarge
+      - r5d.4xlarge
+      - r5d.12xlarge
+      - r5d.24xlarge
+      - z1d.large
+      - z1d.xlarge
+      - z1d.2xlarge
+      - z1d.3xlarge
+      - z1d.6xlarge
+      - z1d.12xlarge
+
+  NodeAutoScalingGroupMinSize:
+    Description: Minimum size of Node Group ASG.
+    Type: Number
+    Default: 0
+
+  NodeAutoScalingGroupMaxSize:
+    Description: Maximum size of Node Group ASG. Set to at least 1 greater than NodeAutoScalingGroupDesiredCapacity.
+    Type: Number
+    Default: 3
+
+  NodeAutoScalingGroupDesiredCapacity:
+    Description: Desired capacity of Node Group ASG.
+    Type: Number
+    Default: 2
+
+  NodeVolumeSize:
+    Description: Node volume size
+    Type: Number
+    Default: 20
+
+  ClusterName:
+    Description: EKS cluster name.
+    Type: String
+    Default: eks-wordpress-cluster
+
+  BootstrapArguments:
+    Description: Arguments to pass to the bootstrap script. See files/bootstrap.sh in https://github.com/awslabs/amazon-eks-ami
+    Type: String
+    Default: ""
+
+  NodeGroupName:
+    Description: Unique identifier for the Node Group.
+    Type: String
+    Default: node-group
+
+  # VpcId:
+  #   Description: The VPC of the worker instances
+  #   Type: AWS::EC2::VPC::Id
+  #   Default: vpc-8b25eef3
+
+  ###
+  # DBs credentials
+  ###
+
+  WPProdDBMasterCredentialsName:
+    Description: >
+      Name of the secret that holds Wordpress Master production database
+      credentials.
+    Type: String
+    Default: WPProdDBMasterCredentials
+
+  WPProdDBSecretUsernameKey:
+    Description: >
+      Name of the Wordpress productionn database Master username key.
+    Type: String
+    Default: Username
+
+  WPProdDBSecretPasswordKey:
+    Description: >
+      Name of the the Wordpress production database Master password key.
+    Type: String
+    Default: Password
+
+  WPDevDBMasterCredentialsName:
+    Description: >
+      Name of the secret that holds Wordpress Master development database
+      credentials.
+    Type: String
+    Default: WPDevDBMasterCredentials
+
+  WPDevDBSecretUsernameKey:
+    Description: >
+      Name of the the Wordpress development database Master username key.
+    Type: String
+    Default: Username
+
+  WPDevDBSecretPasswordKey:
+    Description: >
+      Name of the the Wordpress development database Master password key.
+    Type: String
+    Default: Password
+
+##############################
+#
+# Resources
+#
+##############################
+
+Resources:
+
+  ###
+  #
+  # Permissions
+  #
+  ###
+
+  NodeInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: "/"
+      Roles:
+        - !Ref NodeInstanceRole
+
+  NodeInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      Path: "/"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
+        - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+
+  EksClusterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: eks.amazonaws.com
+            Action: sts:AssumeRole
+      Path: "/"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+        - arn:aws:iam::aws:policy/AmazonEKSServicePolicy
+
+  ###
+  # User that can manipulate Kubernetes via cli
+  ###
+  EKSAccessUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: eks-access
+      Policies:
+        -
+          PolicyName: Switch_to_EKS_cluster_master_policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              Effect: Allow
+              Action: sts:AssumeRole
+              Resource: !ImportValue stack-deployment-role
+
+  ###
+  #
+  # Security groups
+  #
+  ###
+
+  ###
+  # EKS
+  ###
+  ClusterControlPlaneSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Cluster communication with worker nodes
+      VpcId: !Ref Vpc
+
+  NodeSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for all nodes in the cluster
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: !Sub kubernetes.io/cluster/${ClusterName}
+          Value: owned
+
+  NodeSecurityGroupIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    DependsOn: NodeSecurityGroup
+    Properties:
+      Description: Allow node to communicate with each other
+      GroupId: !Ref NodeSecurityGroup
+      SourceSecurityGroupId: !Ref NodeSecurityGroup
+      IpProtocol: -1
+      FromPort: 0
+      ToPort: 65535
+
+  NodeSecurityGroupFromControlPlaneIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    DependsOn: NodeSecurityGroup
+    Properties:
+      Description: Allow worker Kubelets and pods to receive communication from the cluster control plane
+      GroupId: !Ref NodeSecurityGroup
+      SourceSecurityGroupId: !Ref ClusterControlPlaneSecurityGroup
+      IpProtocol: tcp
+      FromPort: 1025
+      ToPort: 65535
+
+  ControlPlaneEgressToNodeSecurityGroup:
+    Type: AWS::EC2::SecurityGroupEgress
+    DependsOn: NodeSecurityGroup
+    Properties:
+      Description: Allow the cluster control plane to communicate with worker Kubelet and pods
+      GroupId: !Ref ClusterControlPlaneSecurityGroup
+      DestinationSecurityGroupId: !Ref NodeSecurityGroup
+      IpProtocol: tcp
+      FromPort: 1025
+      ToPort: 65535
+
+  NodeSecurityGroupFromControlPlaneOn443Ingress:
+    Type: AWS::EC2::SecurityGroupIngress
+    DependsOn: NodeSecurityGroup
+    Properties:
+      Description: Allow pods running extension API servers on port 443 to receive communication from cluster control plane
+      GroupId: !Ref NodeSecurityGroup
+      SourceSecurityGroupId: !Ref ClusterControlPlaneSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+
+  ControlPlaneEgressToNodeSecurityGroupOn443:
+    Type: AWS::EC2::SecurityGroupEgress
+    DependsOn: NodeSecurityGroup
+    Properties:
+      Description: Allow the cluster control plane to communicate with pods running extension API servers on port 443
+      GroupId: !Ref ClusterControlPlaneSecurityGroup
+      DestinationSecurityGroupId: !Ref NodeSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+
+  ClusterControlPlaneSecurityGroupIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    DependsOn: NodeSecurityGroup
+    Properties:
+      Description: Allow pods to communicate with the cluster API Server
+      GroupId: !Ref ClusterControlPlaneSecurityGroup
+      SourceSecurityGroupId: !Ref NodeSecurityGroup
+      IpProtocol: tcp
+      ToPort: 443
+      FromPort: 443
+
+  ###
+  # Database security group
+  ###
+  DBAccess:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Database access on defaut port from Kubernetes nodes.
+      VpcId: !Ref Vpc
+
+  DBAccessIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    DependsOn: NodeSecurityGroup
+    Properties:
+      Description: Allow database access from Kubernetes nodes.
+      GroupId: !Ref DBAccess
+      SourceSecurityGroupId: !Ref NodeSecurityGroup
+      IpProtocol: tcp
+      ToPort: 3306
+      FromPort: 3306
+
+
+  ###
+  #
+  # VPC
+  #
+  ###
+
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 172.16.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        -
+          Key: Name
+          Value: Private vpc for Kubernetes
+
+  ###
+  # Public subnets
+  ###
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: us-east-1a
+      CidrBlock: 172.16.4.0/22
+      VpcId: !Ref Vpc
+      Tags:
+        -
+          Key: Name
+          Value: PublicSubnetA
+        -
+          Key: !Sub kubernetes.io/cluster/${ClusterName}
+          Value: shared
+
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: us-east-1b
+      CidrBlock: 172.16.8.0/22
+      VpcId: !Ref Vpc
+      Tags:
+        -
+          Key: Name
+          Value: PublicSubnetB
+        -
+          Key: !Sub kubernetes.io/cluster/${ClusterName}
+          Value: shared
+
+  ###
+  # Private subnets
+  ###
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: us-east-1a
+      CidrBlock: 172.16.104.0/22
+      MapPublicIpOnLaunch: false
+      VpcId: !Ref Vpc
+      Tags:
+        -
+          Key: Name
+          Value: PrivateSubnetA
+        -
+          Key: kubernetes.io/role/internal-elb
+          Value: 1
+        -
+          Key: !Sub kubernetes.io/cluster/${ClusterName}
+          Value: shared
+
+
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: us-east-1b
+      CidrBlock: 172.16.108.0/22
+      MapPublicIpOnLaunch: false
+      VpcId: !Ref Vpc
+      Tags:
+        -
+          Key: Name
+          Value: PrivateSubnetB
+        -
+          Key: kubernetes.io/role/internal-elb
+          Value: 1
+        -
+          Key: !Sub kubernetes.io/cluster/${ClusterName}
+          Value: shared
+
+  ###
+  # Internet gateway
+  ###
+  IntergetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        -
+          Key: Name
+          Value: KubernetesInternetGateway
+
+  AttachGatewayToVpc:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref IntergetGateway
+      VpcId: !Ref Vpc
+
+
+  ###
+  # Route tables
+  ###
+
+  # Public
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: PublicRouteTable
+
+  PublicRoute:
+    DependsOn:
+      - IntergetGateway
+      - AttachGatewayToVpc
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref IntergetGateway
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicRouteTableToPublicSubnetAAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnetA
+
+  PublicRouteTableToPublicSubnetBAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnetB
+
+
+  # Private A
+  PrivateRouteTableA:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: PrivateRouteTableA
+
+  PrivateRouteA:
+    DependsOn: NatSubnetA
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatSubnetA
+      RouteTableId: !Ref PrivateRouteTableA
+
+  PrivateRouteTableAToPrivateSubnetAAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableA
+      SubnetId: !Ref PrivateSubnetA
+
+  # Private B
+  PrivateRouteTableB:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: PrivateRouteTableB
+
+  PrivateRouteB:
+    DependsOn: NatSubnetB
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatSubnetB
+      RouteTableId: !Ref PrivateRouteTableB
+
+  PrivateRouteTableBToPrivateSubnetBAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableB
+      SubnetId: !Ref PrivateSubnetB
+
+  ###
+  # NATs
+  ###
+  ElasticIpA:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  ElasticIpB:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  NatSubnetA:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt ElasticIpA.AllocationId
+      SubnetId: !Ref PublicSubnetA
+      Tags:
+        -
+          Key: Name
+          Value: NatPrivateSubnetA
+
+  NatSubnetB:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt ElasticIpB.AllocationId
+      SubnetId: !Ref PublicSubnetB
+      Tags:
+        -
+          Key: Name
+          Value: NatPrivateSubnetB
+
+
+
+  ###
+  #
+  # EKS Cluster
+  #
+  ###
+
+  EksCluster:
+    Type: AWS::EKS::Cluster
+    Properties :
+      Name: !Ref ClusterName
+      ResourcesVpcConfig:
+        SubnetIds:
+          - !Ref PublicSubnetA
+          - !Ref PublicSubnetB
+        SecurityGroupIds:
+          - !Ref ClusterControlPlaneSecurityGroup
+      RoleArn: !GetAtt EksClusterRole.Arn
+
+  ###
+  #
+  # Cluster instances
+  #
+  ###
+
+  NodeGroup:
+    DependsOn: EksCluster
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      DesiredCapacity: !Ref NodeAutoScalingGroupDesiredCapacity
+      LaunchConfigurationName: !Ref NodeLaunchConfig
+      MinSize: !Ref NodeAutoScalingGroupMinSize
+      MaxSize: !Ref NodeAutoScalingGroupMaxSize
+      VPCZoneIdentifier:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      Tags:
+        - Key: Name
+          Value: !Sub ${ClusterName}-${NodeGroupName}-Node
+          PropagateAtLaunch: true
+        - Key: !Sub kubernetes.io/cluster/${ClusterName}
+          Value: owned
+          PropagateAtLaunch: true
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MaxBatchSize: 1
+        MinInstancesInService: !Ref NodeAutoScalingGroupDesiredCapacity
+
+  NodeLaunchConfig:
+    DependsOn: EksCluster
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      AssociatePublicIpAddress: false
+      IamInstanceProfile: !Ref NodeInstanceProfile
+      ImageId: !Ref NodeImageId
+      InstanceType: !Ref NodeInstanceType
+      KeyName: !Ref KeyName
+      SecurityGroups:
+        - !Ref NodeSecurityGroup
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: !Ref NodeVolumeSize
+            VolumeType: gp2
+            DeleteOnTermination: true
+      UserData:
+        Fn::Base64:
+          !Sub |
+            #!/bin/bash
+            set -o xtrace
+            /etc/eks/bootstrap.sh ${ClusterName} ${BootstrapArguments}
+            /opt/aws/bin/cfn-signal --exit-code $? \
+                     --stack  ${AWS::StackName} \
+                     --resource NodeGroup  \
+                     --region ${AWS::Region}
+
+  ###
+  #
+  # Databases
+  #
+  ###
+
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: >
+        Group of subnets where the database will be available
+      # DBSubnetGroupName must be lowercase because it will be converted to
+      # lowercase anyway and the database cluster will not find it
+      DBSubnetGroupName: database_private_subnet_group
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+      Tags:
+        -
+          Key: Name
+          Value: database_private_subnet_group
+
+  ###
+  # Production
+  ###
+  ProductionDBCluster:
+    Type: AWS::RDS::DBCluster
+    # DependsOn: DBSubnetGroup
+    Properties:
+      DatabaseName: WPProd
+      DBClusterIdentifier: wp-prod-db
+      DBClusterParameterGroupName: default.aurora5.6
+      # EnableIAMDatabaseAuthentication: true
+      Engine: aurora
+      EngineMode: serverless
+      ScalingConfiguration:
+        AutoPause: true
+        MaxCapacity: 4
+        MinCapacity: 2
+        SecondsUntilAutoPause: 300
+      MasterUsername: !Sub '{{resolve:secretsmanager:${WPProdDBMasterCredentialsName}:SecretString:${WPProdDBSecretUsernameKey}}}'
+      MasterUserPassword: !Sub '{{resolve:secretsmanager:${WPProdDBMasterCredentialsName}:SecretString:${WPProdDBSecretPasswordKey}}}'
+      Port: 3306
+      StorageEncrypted: true
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VpcSecurityGroupIds:
+        - !Ref DBAccess
+
+  ###
+  # Development
+  ###
+  DevelopmentDBCluster:
+    Type: AWS::RDS::DBCluster
+    # DependsOn: DBSubnetGroup
+    Properties:
+      DatabaseName: WPDev
+      DBClusterIdentifier: wp-dev-db
+      DBClusterParameterGroupName: default.aurora5.6
+      # EnableIAMDatabaseAuthentication: true
+      Engine: aurora
+      EngineMode: serverless
+      ScalingConfiguration:
+        AutoPause: true
+        MaxCapacity: 4
+        MinCapacity: 2
+        SecondsUntilAutoPause: 300
+      MasterUsername: !Sub '{{resolve:secretsmanager:${WPDevDBMasterCredentialsName}:SecretString:${WPProdDBSecretUsernameKey}}}'
+      MasterUserPassword: !Sub '{{resolve:secretsmanager:${WPDevDBMasterCredentialsName}:SecretString:${WPProdDBSecretPasswordKey}}}'
+      Port: 3306
+      StorageEncrypted: true
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VpcSecurityGroupIds:
+        - !Ref DBAccess
+
+
+##############################
+#
+# Outputs
+#
+##############################
+
+Outputs:
+  DeploymentRole:
+    Description: >
+      ARN of the user that will be able to administer EKS.
+    Value: !GetAtt EKSAccessUser.Arn
+
+  InstanceProfileARN:
+    Description: >
+      Arn of the profile attached to node instances.
+    Value: !GetAtt NodeInstanceRole.Arn
+
+  ProdDatabaseHostName:
+    Description: >
+      Hostname of the production database endpoint.
+    Value: !GetAtt ProductionDBCluster.Endpoint.Address
+
+  DevDatabaseHostName:
+    Description: >
+      Hostname of the development database endpoint.
+    Value: !GetAtt DevelopmentDBCluster.Endpoint.Address
